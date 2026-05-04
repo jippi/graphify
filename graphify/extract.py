@@ -265,6 +265,32 @@ def _import_python(node, source: bytes, file_nid: str, stem: str, edges: list, s
 
 
 def _import_js(node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str) -> None:
+    """Emit edges for `import` statements AND `export ... from` re-exports.
+
+    Re-exports in barrel files (`index.ts` / `index.js` patterns common in
+    React/Vue/Svelte component libraries and codegen output) are structurally
+    `export_statement` nodes with a source clause — same module-path semantics
+    as imports, just with the symbols flowing the other direction. Treating
+    them as imports for graph purposes makes the barrel reachable from the
+    file it re-exports, which lets BFS traversals find the real components.
+
+    For raw `export const x = 1` / `export default someValue` / `export
+    function f() {}` — no source clause — this handler returns without
+    emitting anything (guard via `from` keyword presence so `export default
+    'string-literal'` doesn't accidentally produce a phantom edge).
+    """
+    # Guard for export_statement: only proceed when there's a `from` clause.
+    # import_statement always has `from`-style structure so it passes through.
+    if node.type == "export_statement":
+        has_from = any(
+            child.type == "from"
+            or (child.type == "keyword" and _read_text(child, source) == "from")
+            or _read_text(child, source) == "from"
+            for child in node.children
+        )
+        if not has_from:
+            return
+
     resolved_path: "Path | None" = None
     for child in node.children:
         if child.type == "string":
@@ -691,7 +717,11 @@ _JS_CONFIG = LanguageConfig(
     ts_module="tree_sitter_javascript",
     class_types=frozenset({"class_declaration"}),
     function_types=frozenset({"function_declaration", "method_definition"}),
-    import_types=frozenset({"import_statement"}),
+    # export_statement covers `export ... from './foo'` re-exports — the same
+    # module-path semantics as imports, just with symbols flowing the other
+    # way. Necessary to make barrel `index.{js,ts}` files reachable from
+    # the components they re-export.
+    import_types=frozenset({"import_statement", "export_statement"}),
     call_types=frozenset({"call_expression"}),
     call_function_field="function",
     call_accessor_node_types=frozenset({"member_expression"}),
@@ -705,7 +735,7 @@ _TS_CONFIG = LanguageConfig(
     ts_language_fn="language_typescript",
     class_types=frozenset({"class_declaration"}),
     function_types=frozenset({"function_declaration", "method_definition"}),
-    import_types=frozenset({"import_statement"}),
+    import_types=frozenset({"import_statement", "export_statement"}),
     call_types=frozenset({"call_expression"}),
     call_function_field="function",
     call_accessor_node_types=frozenset({"member_expression"}),
